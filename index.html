@@ -281,7 +281,7 @@
             { id: 5, name: "Gudang Artistik", price: 2000000, selected: false, image: "https://placehold.co/800x600/f8fafc/000000?text=Gudang+Artistik" }
         ];
 
-        // Data Beban Listrik (menggunakan counter untuk ID unik)
+        // Data Beban Listrik
         let deviceCounter = 1;
         let electricityData = [
             { id: deviceCounter++, name: "Lampu Sorot LED", image: null, watt: 50, hours: 8, qty: 10, days: 7 },
@@ -291,25 +291,105 @@
         // Data Pengecatan
         let paintingData = { area: 0, pricePerM2: 35000, total: 0 };
 
+
+        
+        // Fungsi untuk mengkompres gambar agar LocalStorage tidak penuh (Batas ~5MB)
+        function resizeAndCompressImage(file, callback) {
+            const reader = new FileReader();
+            reader.readAsDataURL(file);
+            reader.onload = (e) => {
+                const img = new Image();
+                img.src = e.target.result;
+                img.onload = () => {
+                    const canvas = document.createElement('canvas');
+                    // Batasi maksimal resolusi 1080px
+                    const MAX_SIZE = 1080;
+                    let width = img.width;
+                    let height = img.height;
+
+                    if (width > height && width > MAX_SIZE) {
+                        height *= MAX_SIZE / width;
+                        width = MAX_SIZE;
+                    } else if (height > width && height > MAX_SIZE) {
+                        width *= MAX_SIZE / height;
+                        height = MAX_SIZE;
+                    }
+
+                    canvas.width = width;
+                    canvas.height = height;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, width, height);
+                    
+                    // Kompres jadi JPEG dengan kualitas 70% agar ringan di memori browser
+                    const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
+                    callback(dataUrl);
+                };
+            };
+        }
+
+        // Muat data saat halaman dibuka
+        function loadFromLocalStorage() {
+            try {
+                const savedRooms = localStorage.getItem('gudskul_rooms');
+                if (savedRooms) roomsData = JSON.parse(savedRooms);
+
+                const savedElec = localStorage.getItem('gudskul_elec');
+                if (savedElec) {
+                    electricityData = JSON.parse(savedElec);
+                    if (electricityData.length > 0) {
+                        const maxId = Math.max(...electricityData.map(d => d.id));
+                        deviceCounter = maxId + 1; // Sesuaikan counter ID agar tidak bentrok
+                    }
+                }
+
+                const savedBaseRate = localStorage.getItem('gudskul_baserate');
+                if (savedBaseRate) baseRate = parseFloat(savedBaseRate);
+
+                const savedPaint = localStorage.getItem('gudskul_paint');
+                if (savedPaint) paintingData = JSON.parse(savedPaint);
+
+                // Set nilai kembali ke inputan visual
+                document.getElementById('base-rate').value = baseRate;
+                document.getElementById('paint-area').value = paintingData.area;
+                document.getElementById('paint-price').value = paintingData.pricePerM2;
+                
+            } catch (error) {
+                console.error("Gagal memuat data dari browser:", error);
+            }
+        }
+
+        // Simpan data secara otomatis
+        function saveToLocalStorage() {
+            try {
+                localStorage.setItem('gudskul_rooms', JSON.stringify(roomsData));
+                localStorage.setItem('gudskul_elec', JSON.stringify(electricityData));
+                localStorage.setItem('gudskul_baserate', baseRate.toString());
+                localStorage.setItem('gudskul_paint', JSON.stringify(paintingData));
+            } catch (error) {
+                console.error("Gagal menyimpan data:", error);
+                if (error.name === 'QuotaExceededError') {
+                    showToast("Penyimpanan penuh! Hapus atau ganti gambar lain.", "error");
+                }
+            }
+        }
+
+
         // --- UTILITIES FORMAT ---
         const formatRupiah = (number) => {
             return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(number);
         };
 
-        // --- RENDER RUANGAN ---
         function renderRooms() {
             const container = document.getElementById('rooms-grid');
             container.innerHTML = '';
 
             roomsData.forEach(room => {
                 const card = document.createElement('div');
-                // Styling Card: putih, border tipis, hover efek
                 card.className = `relative bg-white border ${room.selected ? 'border-black ring-1 ring-black' : 'border-gray-200'} rounded-xl overflow-hidden shadow-sm transition-all`;
                 
                 card.innerHTML = `
                     <div class="relative h-40 w-full bg-gray-100 group">
                         <img src="${room.image}" alt="${room.name}" class="w-full h-full object-cover">
-                        <!-- Overlay Tombol -->
                         <div class="absolute inset-0 bg-black/40 flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity backdrop-blur-[2px]">
                             <button type="button" onclick="openImageModal('${room.image}')" class="bg-white/90 text-black text-xs font-semibold py-2 px-3 rounded-lg hover:bg-white transition-colors transform hover:scale-105 shadow-md">
                                 <i class="fa-solid fa-expand mr-1"></i> Lihat
@@ -339,40 +419,44 @@
             });
             updateInvoice();
         }
-
-        // --- STREAMING_CHUNK:Logika Pengelolaan Data (Ruangan, Listrik, Cat)... ---
         
         function toggleRoom(id, isSelected) {
             const room = roomsData.find(r => r.id === id);
-            if(room) room.selected = isSelected;
-            renderRooms();
+            if(room) {
+                room.selected = isSelected;
+                renderRooms();
+                saveToLocalStorage(); // Auto-save
+            }
         }
 
         function updateRoomPrice(id, newPrice) {
             const room = roomsData.find(r => r.id === id);
             if(room) {
                 room.price = parseFloat(newPrice) || 0;
-                renderRooms(); // Re-render if selected logic depends on it, and update invoice
+                renderRooms();
+                saveToLocalStorage(); // Auto-save
             }
         }
 
         function handleRoomImage(event, id) {
             const file = event.target.files[0];
             if (file) {
-                const reader = new FileReader();
-                reader.onload = (e) => {
+                showToast("Memproses gambar resolusi tinggi...");
+                resizeAndCompressImage(file, (compressedData) => {
                     const room = roomsData.find(r => r.id === id);
-                    if(room) room.image = e.target.result;
+                    if(room) room.image = compressedData;
                     renderRooms();
-                    showToast("Gambar ruangan diperbarui");
-                };
-                reader.readAsDataURL(file);
+                    saveToLocalStorage(); // Auto-save
+                    showToast("Gambar ruangan berhasil diperbarui");
+                });
             }
         }
+
 
         function updateBaseRate(val) {
             baseRate = parseFloat(val) || 0;
             renderElectricity();
+            saveToLocalStorage(); // Auto-save
         }
 
         function renderElectricity() {
@@ -389,7 +473,6 @@
                     </td>
                     <td class="p-3">
                         <div class="flex items-center gap-3">
-                            <!-- Thumbnail Upload -->
                             <label class="cursor-pointer relative w-10 h-10 rounded-lg bg-gray-100 border border-gray-200 flex items-center justify-center overflow-hidden group flex-shrink-0 shadow-sm">
                                 <img src="${dev.image || 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs='}" class="${dev.image ? 'w-full h-full object-cover' : 'hidden'}">
                                 <div class="${dev.image ? 'hidden group-hover:flex bg-black/50' : 'flex bg-transparent'} absolute inset-0 items-center justify-center text-gray-500 group-hover:text-white transition-colors">
@@ -414,11 +497,13 @@
         function addDevice() {
             electricityData.push({ id: deviceCounter++, name: "Perangkat Baru", image: null, watt: 0, hours: 0, qty: 1, days: 1 });
             renderElectricity();
+            saveToLocalStorage(); // Auto-save
         }
 
         function removeDevice(id) {
             electricityData = electricityData.filter(d => d.id !== id);
             renderElectricity();
+            saveToLocalStorage(); // Auto-save
         }
 
         function updateDevice(id, field, value) {
@@ -426,19 +511,19 @@
             if(dev) {
                 dev[field] = field === 'name' ? value : (parseFloat(value) || 0);
                 renderElectricity();
+                saveToLocalStorage(); // Auto-save
             }
         }
 
         function handleDeviceImage(event, id) {
             const file = event.target.files[0];
             if (file) {
-                const reader = new FileReader();
-                reader.onload = (e) => {
+                resizeAndCompressImage(file, (compressedData) => {
                     const dev = electricityData.find(d => d.id === id);
-                    if(dev) dev.image = e.target.result;
+                    if(dev) dev.image = compressedData;
                     renderElectricity();
-                };
-                reader.readAsDataURL(file);
+                    saveToLocalStorage(); // Auto-save
+                });
             }
         }
 
@@ -450,9 +535,9 @@
             paintingData.total = area * price;
             document.getElementById('paint-total-display').innerText = formatRupiah(paintingData.total);
             updateInvoice();
+            saveToLocalStorage(); // Auto-save
         }
 
-        // --- STREAMING_CHUNK:Perhitungan Ringkasan / Invoice... ---
         function updateInvoice() {
             // 1. Sewa Ruangan
             const selectedRooms = roomsData.filter(r => r.selected);
@@ -492,7 +577,6 @@
             document.getElementById('inv-grand-total').innerText = formatRupiah(grandTotal);
         }
 
-        // --- STREAMING_CHUNK:Fitur Ekspor PDF & Excel... ---
         function exportToPDF() {
             showToast("Sedang memproses PDF, mohon tunggu...", "success");
             
@@ -500,61 +584,42 @@
             const buttons = element.querySelector('.no-print');
             const logo = element.querySelector('img');
 
-            // 1. Simpan state/kondisi awal
             const originalScrollY = window.scrollY;
             const isSticky = element.classList.contains('lg:sticky');
 
-            // 2. Modifikasi DOM sementara (Mencegah Blank PDF)
-            // Scroll instan ke ujung atas agar html2canvas tidak salah kordinat (penyebab utama blank)
             window.scrollTo(0, 0);
 
-            // Matikan sticky sementara dan kunci lebar elemen agar tidak mengkerut
-            if (isSticky) {
-                element.classList.remove('lg:sticky', 'lg:top-24');
-            }
+            if (isSticky) element.classList.remove('lg:sticky', 'lg:top-24');
             element.style.width = '100%';
             element.style.maxWidth = '800px';
 
-            // Sembunyikan tombol ekspor agar tidak ikut ter-print
             if (buttons) buttons.style.display = 'none';
-
-            // Matikan efek blend pada logo yang sering membuat canvas crash
             if (logo) logo.classList.remove('mix-blend-multiply');
 
             const opt = {
                 margin:       15,
                 filename:     `Estimasi_Sewa_Gudskul_${new Date().getTime()}.pdf`,
                 image:        { type: 'jpeg', quality: 0.98 },
-                html2canvas:  { 
-                    scale: 2, 
-                    useCORS: true, 
-                    scrollY: 0,
-                    allowTaint: true // Mengizinkan render gambar eksternal (logo)
-                },
+                html2canvas:  { scale: 2, useCORS: true, scrollY: 0, allowTaint: true },
                 jsPDF:        { unit: 'mm', format: 'a4', orientation: 'portrait' }
             };
             
             html2pdf().set(opt).from(element).save().then(() => {
-                // 3. Kembalikan semua state ke kondisi semula dengan cepat
                 if (isSticky) element.classList.add('lg:sticky', 'lg:top-24');
                 element.style.width = '';
                 element.style.maxWidth = '';
                 if (buttons) buttons.style.display = '';
                 if (logo) logo.classList.add('mix-blend-multiply');
                 window.scrollTo(0, originalScrollY);
-
                 showToast("PDF berhasil diunduh");
             }).catch(error => {
                 console.error("PDF Error: ", error);
-                
-                // Pastikan tampilan tetap normal kembali meski terjadi error
                 if (isSticky) element.classList.add('lg:sticky', 'lg:top-24');
                 element.style.width = '';
                 element.style.maxWidth = '';
                 if (buttons) buttons.style.display = '';
                 if (logo) logo.classList.add('mix-blend-multiply');
                 window.scrollTo(0, originalScrollY);
-
                 showToast("Gagal membuat PDF", "error");
             });
         }
@@ -563,13 +628,11 @@
             try {
                 const wb = XLSX.utils.book_new();
 
-                // Sheet 1: Ruangan
                 const wsRooms = XLSX.utils.json_to_sheet(
                     roomsData.filter(r => r.selected).map(r => ({ "Nama Ruangan": r.name, "Harga Sewa": r.price }))
                 );
                 XLSX.utils.book_append_sheet(wb, wsRooms, "Sewa Ruangan");
 
-                // Sheet 2: Listrik
                 const wsElec = XLSX.utils.json_to_sheet(
                     electricityData.map(d => ({
                         "Perangkat": d.name, "Watt": d.watt, "Jam/Hari": d.hours, "Jumlah": d.qty, "Hari": d.days,
@@ -579,7 +642,6 @@
                 );
                 XLSX.utils.book_append_sheet(wb, wsElec, "Beban Listrik");
 
-                // Menyimpan File
                 XLSX.writeFile(wb, `Rekap_Sewa_Gudskul_${new Date().getTime()}.xlsx`);
                 showToast("Data Excel berhasil diunduh");
             } catch (error) {
@@ -597,21 +659,13 @@
             
             container.appendChild(toast);
             
-            // Animasi masuk
-            setTimeout(() => {
-                toast.classList.remove('translate-y-10', 'opacity-0');
-            }, 10);
-
-            // Hilang otomatis
+            setTimeout(() => toast.classList.remove('translate-y-10', 'opacity-0'), 10);
             setTimeout(() => {
                 toast.classList.add('translate-y-10', 'opacity-0');
                 setTimeout(() => toast.remove(), 300);
             }, 3000);
         }
 
-
-        // --- STREAMING_CHUNK:Logika Interaksi Modal Gambar (Tuntas, Bebas Error)... ---
-        // Variabel Status Modal
         let currentZoom = 1;
         let isDragging = false;
         let startX, startY, translateX = 0, translateY = 0;
@@ -620,7 +674,6 @@
         const img = document.getElementById('modal-img');
         const imgContainer = document.getElementById('modal-img-container');
 
-        // PENTING: Mencegah browser mendrag elemen gambar secara native (penyebab bug ghost-drag)
         img.addEventListener('dragstart', (e) => e.preventDefault());
 
         function openImageModal(imgSrc) {
@@ -636,7 +689,6 @@
         }
 
         function updateTransform(animate = true) {
-            // Matikan animasi transisi CSS saat di-drag agar pergerakan mouse tidak delay (lag)
             img.style.transitionDuration = animate ? '0.2s' : '0s';
             img.style.transform = `translate(${translateX}px, ${translateY}px) scale(${currentZoom})`;
         }
@@ -662,49 +714,40 @@
             updateTransform(true);
         }
 
-        // --- Event Listeners untuk Dragging (Pan) ---
         imgContainer.addEventListener('mousedown', (e) => {
-            // Abaikan jika klik mengenai tombol toolbar
             if (e.target.closest('button')) return; 
-            
             isDragging = true;
             imgContainer.style.cursor = 'grabbing';
-            // Hitung posisi awal mouse dikurangi nilai translasi saat ini
             startX = e.clientX - translateX;
             startY = e.clientY - translateY;
         });
 
         window.addEventListener('mousemove', (e) => {
             if (!isDragging) return;
-            e.preventDefault(); // Aman di mousemove
+            e.preventDefault(); 
             translateX = e.clientX - startX;
             translateY = e.clientY - startY;
-            updateTransform(false); // Animate = false agar mulus saat digeser
+            updateTransform(false); 
         });
 
         window.addEventListener('mouseup', () => {
             if (isDragging) {
                 isDragging = false;
                 imgContainer.style.cursor = 'grab';
-                updateTransform(true); // Kembalikan transisi
+                updateTransform(true);
             }
         });
 
-        // --- Event Listeners untuk Zoom via Mouse Wheel ---
-        // PENTING: { passive: false } wajib ditambahkan agar e.preventDefault() tidak error di Chrome/browser modern
         imgContainer.addEventListener('wheel', (e) => {
-            e.preventDefault(); // Cegah halaman ter-scroll
-            if (e.deltaY < 0) {
-                zoomIn(); // Scroll ke atas = Zoom In
-            } else {
-                zoomOut(); // Scroll ke bawah = Zoom Out
-            }
+            e.preventDefault(); 
+            if (e.deltaY < 0) { zoomIn(); } else { zoomOut(); }
         }, { passive: false });
 
 
-        // Init
+        // Init yang sudah disempurnakan (Muat dulu, baru render)
         window.onload = () => {
-            renderRooms();
+            loadFromLocalStorage(); // Tarik semua memori
+            renderRooms();          // Render ke layar berdasarkan memori
             renderElectricity();
             calculatePainting();
         };
